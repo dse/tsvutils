@@ -1,0 +1,32 @@
+#!/usr/bin/env perl
+use warnings;
+use strict;
+
+use Spreadsheet::ParseXLSX;
+
+my $filename = shift(@ARGV);
+die("No filename specified.\n") unless defined $filename;
+
+my $parser = Spreadsheet::ParseXLSX->new;
+my $workbook = $parser->parse($filename);
+
+die("No XLSX workbook found.\n") unless $workbook;
+
+for my $worksheet ( $workbook->worksheets() ) {
+    my ( $row_min, $row_max ) = $worksheet->row_range();
+    my ( $col_min, $col_max ) = $worksheet->col_range();
+    for my $row ( $row_min .. $row_max ) {
+        my @row = ();
+        for my $col ( $col_min .. $col_max ) {
+            my $cell = $worksheet->get_cell( $row, $col );
+            push(@row, $cell ? $cell->value : undef);
+
+            #print "Row, Col    = ($row, $col)\n";
+            #print "Value       = ", $cell->value(),       "\n";
+            #print "Unformatted = ", $cell->unformatted(), "\n";
+            #print "\n";
+
+        }
+        print(join("\t", map { $_ // "" } @row), "\n");
+    }
+}
