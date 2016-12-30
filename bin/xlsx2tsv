@@ -20,12 +20,6 @@ for my $worksheet ( $workbook->worksheets() ) {
         for my $col ( $col_min .. $col_max ) {
             my $cell = $worksheet->get_cell( $row, $col );
             push(@row, $cell ? $cell->value : undef);
-
-            #print "Row, Col    = ($row, $col)\n";
-            #print "Value       = ", $cell->value(),       "\n";
-            #print "Unformatted = ", $cell->unformatted(), "\n";
-            #print "\n";
-
         }
         print(join("\t", map { $_ // "" } @row), "\n");
     }
