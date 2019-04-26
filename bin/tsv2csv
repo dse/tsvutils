@@ -1,0 +1,14 @@
+#!/usr/bin/env perl
+use warnings;
+use strict;
+
+use Text::CSV;
+
+my $csv = Text::CSV->new({ binary => 1 });
+
+while (<>) {
+    s{\R\z}{};
+    my @data = split("\t", $_);
+    $csv->print(\*STDOUT, \@data);
+    print "\n";
+}
