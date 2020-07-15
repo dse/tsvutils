@@ -8,54 +8,41 @@
 #include <string.h>
 #include <stdlib.h>
 #include <wchar.h>
+#include <locale.h>
 
-/* max line width */
 #define LINESIZE 65536
-
-/* number of lines to allocate memory for at each step */
 #define TOKENLINES_INC 4096
+#define LINESINC 4096
+#define MAXCOLUMNS 256
 
-/* each line of data read */
 char linebuf[LINESIZE];
-
-/* each array of tokens */
-char** tokens;
-
-/* total number of columns */
-size_t numcolumns;
-
-/* width of each column */
-size_t* columnwidth;
-
-/* lifetime array of arrays of tokens */
-char*** tokenlines;
-
-/* each line's number of tokens */
-size_t* tokenlines_numtokens;
-
-/* lifetime number of lines */
-size_t numlines;
-
-/* lifetime number of lines allocated */
-size_t tokenlines_bufsize;
+char **lines = NULL;
+size_t linebufsize = 0;
+size_t numlines = 0;
+size_t numcolumns = 0;
+size_t columnwidth[MAXCOLUMNS];
+size_t bytes = 0;
+size_t alloced = 0;
+char tokenbuf[LINESIZE];
+char* tokens[MAXCOLUMNS];
+size_t numtokens;
 
 int main(int, char**);
 int readfile(char*);
 int readfp(FILE*, char*);
 int chomp(char*);
 size_t addline(char*);
-size_t addtokens(size_t, char**);
-void init();
-size_t getcolumnwidths(size_t, char***);
-void printcolumns(size_t, char***);
 size_t mbstrlen(const char* s);
 void mbprintleftpad(size_t, char*);
+void computecolumnwidths();
+void printlines();
+void tokenize(char* s);
 
-size_t *alloced = 0;
+#define printlocaleinfo(what) (printf("%s: %s\n", #what, setlocale(what, NULL)))
 
 int
 main(int argc, char** argv) {
-    init();
+    setlocale(LC_ALL, "");
     if (argc < 2) {
         readfp(stdin, "STDIN");
     } else {
@@ -63,16 +50,8 @@ main(int argc, char** argv) {
             readfile(*argv);
         }
     }
-    getcolumnwidths(numlines, tokenlines);
-    printcolumns(numlines, tokenlines);
-}
-
-void
-init() {
-    tokenlines = NULL;
-    tokenlines_numtokens = NULL;
-    numlines = 0;
-    tokenlines_bufsize = 0;
+    computecolumnwidths();
+    printlines();
 }
 
 int
@@ -95,31 +74,23 @@ readfile(char* filename) {
 int
 readfp(FILE* fp, char* filename) {
     char* line;
-    while (1) {
-        if (feof(fp)) {
-            return 1;
-        }
-        if ((line = fgets(linebuf, LINESIZE, fp)) == NULL) {
-            if (errno == 0) {
-                return 1;
-            }
-            fprintf(stderr, "tsvtable: fgets error from %s: %s (%d)\n", filename, strerror(errno), errno);
-            return 0;
-        }
+    while ((line = fgets(linebuf, LINESIZE, fp)) != NULL) {
+        bytes += strlen(line);
         if (addline(line) != 0) {
-            if (isatty(fileno(stderr))) {
-                fprintf(stderr, "  %zu (%zu)\r", numlines, alloced);
+            if (isatty(fileno(stderr)) && numlines % 100 == 0) {
+                fprintf(stderr, "  %zu lines; %zu bytes; %zu bytes alloced\r", numlines, bytes, alloced);
                 fflush(stderr);
             }
         }
     }
+    if (ferror(fp)) {
+        fprintf(stderr, "tsvtable: error reading %s: %s\n", filename, strerror(errno));
+    }
     if (isatty(fileno(stderr))) {
-        fprintf(stderr, "  %zu (%zu)\n", numlines, alloced);
+        fprintf(stderr, "  %zu lines; %zu bytes; %zu bytes alloced\n", numlines, bytes, alloced);
     }
     return 1;
 }
-
-#define ISCRLF(c) ((c == '\r' || c == '\n'))
 
 int
 chomp(char* line) {
@@ -136,111 +107,71 @@ chomp(char* line) {
 
 size_t
 addline(char* line) {
-    char* token;
-    char* stringp;
-    size_t j;
     chomp(line);
-    if (*line == '\0') {
-        return addtokens(0, NULL);
-    }
-    size_t numtokens = 1;
-    for (stringp = line; *stringp; stringp += 1) {
-        if (*stringp == '\t') {
-            numtokens += 1;
-        }
-    }
-    char* linecopy = strdup(line);
-    alloced += strlen(line) + 1;
-    tokens = (char**)malloc(sizeof(char *) * numtokens);
-    alloced += sizeof(char *) * numtokens;
-    for (j = 0, stringp = linecopy; j < numtokens; j += 1) {
-        token = strsep(&stringp, "\t");
-        if (token == NULL) {
-            break;
-        }
-        tokens[j] = token;
-    }
-    return addtokens(numtokens, tokens);
-}
-
-size_t
-addtokens(size_t numtokens, char** tokens) {
-    if (numlines >= tokenlines_bufsize) {
-        if (tokenlines_bufsize == 0) {
-            tokenlines_bufsize += TOKENLINES_INC;
-            tokenlines           = (char ***)malloc(sizeof(char **) * tokenlines_bufsize);
-            tokenlines_numtokens = (size_t*)malloc(sizeof(size_t) * tokenlines_bufsize);
-            alloced += (sizeof(char **) + sizeof(size_t)) * tokenlines_bufsize;
+    if (numlines >= linebufsize) {
+        linebufsize += LINESINC;
+        if (lines == NULL) {
+            lines = (char **)malloc(sizeof(char *) * linebufsize);
+            alloced += sizeof(char *) * LINESINC;
         } else {
-            tokenlines_bufsize += TOKENLINES_INC;
-            tokenlines           = (char ***)realloc(tokenlines, sizeof(char **) * tokenlines_bufsize);
-            tokenlines_numtokens = (size_t*)realloc(tokenlines_numtokens, sizeof(size_t) * tokenlines_bufsize);
-            alloced += (sizeof(char **) + sizeof(size_t)) * TOKENLINES_INC;
+            lines = (char **)realloc(lines, sizeof(char *) * linebufsize);
+            alloced += sizeof(char *) * LINESINC;
         }
     }
-    if (numtokens == 0 || tokens == NULL) {
-        tokenlines[numlines] = NULL;
-        tokenlines_numtokens[numlines] = 0;
+    if (*line == '\0') {
+        lines[numlines] = NULL;
         numlines += 1;
         return 0;
     }
-    tokenlines[numlines] = tokens;
-    tokenlines_numtokens[numlines] = numtokens;
+    lines[numlines] = strdup(line);
     numlines += 1;
-    return numtokens;
+    alloced += strlen(line) + 1;
+    return strlen(line);
 }
 
-size_t
-getcolumnwidths(size_t numlines, char*** tokenlines) {
-    size_t i;
-    size_t j;
-    size_t numtokens;
-    size_t len;
-
-    /* compute number of columns */
-    numcolumns = 0;
-    for (i = 0; i < numlines; i += 1) {
-        if (numcolumns < tokenlines_numtokens[i]) {
-            numcolumns = tokenlines_numtokens[i];
-        }
-    }
-
-    /* initialize columnwidth array */
-    columnwidth = (size_t*)malloc(sizeof(size_t) * numcolumns);
-    alloced += sizeof(size_t) * numcolumns;
-    for (j = 0; j < numcolumns; j += 1) {
+void
+computecolumnwidths() {
+    size_t i, j;
+    for (j = 0; j < MAXCOLUMNS; j += 1) {
         columnwidth[j] = 0;
     }
-
-    /* compute column widths */
     for (i = 0; i < numlines; i += 1) {
-        numtokens = tokenlines_numtokens[i];
+        if (lines[i] == NULL) {
+            continue;
+        }
+        tokenize(lines[i]);
+        if (numcolumns < numtokens) {
+            numcolumns = numtokens;
+        }
         for (j = 0; j < numtokens; j += 1) {
-            len = mbstrlen(tokenlines[i][j]);
+            size_t len = mbstrlen(tokens[j]);
             if (columnwidth[j] < len) {
                 columnwidth[j] = len;
             }
         }
     }
-
-    return numlines;
 }
 
 void
-printcolumns(size_t numlines, char*** tokenlines) {
+printlines() {
     size_t i;
     size_t j;
-    size_t numtokens;
-    int width;
+    for (j = 0; j < numcolumns; j += 1) {
+        printf("%zu", columnwidth[j]);
+        if (j < (numcolumns - 1)) {
+            fputs(", ", stdout);
+        } else {
+            fputs("\n", stdout);
+        }
+    }
     for (i = 0; i < numlines; i += 1) {
-        numtokens = tokenlines_numtokens[i];
+        if (lines[i] == NULL) {
+            numtokens = 0;
+        } else {
+            tokenize(lines[i]);
+        }
         for (j = 0; j < numcolumns; j += 1) {
-            width = (int)columnwidth[j];
-            if (j < numtokens) {
-                mbprintleftpad(width, tokenlines[i][j]);
-            } else {
-                mbprintleftpad(width, "");
-            }
+            mbprintleftpad(columnwidth[j], j < numtokens ? tokens[j] : "");
             if (j < (numcolumns - 1)) {
                 fputs(" | ", stdout);
             } else {
@@ -250,11 +181,42 @@ printcolumns(size_t numlines, char*** tokenlines) {
     }
 }
 
-size_t mbstrlen(const char* s) {
-    return mbsrtowcs(NULL, &s, 0, NULL);
+void
+tokenize(char* s) {
+    strcpy(tokenbuf, s);
+    char* p;
+    numtokens = 0;
+    size_t j;
+    for (j = 0, p = tokenbuf; j < MAXCOLUMNS; j += 1) {
+        if ((tokens[j] = strsep(&p, "\t")) == NULL) {
+            break;
+        }
+        numtokens += 1;
+    }
 }
 
-void mbprintleftpad(size_t len, char* s) {
+size_t
+mbstrlen(const char* s) {
+    if (MB_CUR_MAX == 1) {
+        return strlen(s);
+    }
+    size_t result = mbstowcs(NULL, s, MB_CUR_MAX);
+    if (result == (size_t)-1) {
+        return strlen(s);
+    }
+    if (result == (size_t)-2) {
+        return strlen(s);
+    }
+    return result;
+}
+
+void
+mbprintleftpad(size_t len, char* s) {
+    if (MB_CUR_MAX == 1) {
+        printf("%-*s", (int)len, s);
+        return;
+    }
     fputs(s, stdout);
-    printf("%-*s", (int)(len - mbstrlen(s)), "");
+    size_t rem = len - mbstrlen(s);
+    printf("%-*s", (int)rem, "");
 }
