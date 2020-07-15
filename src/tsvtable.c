@@ -2,22 +2,21 @@
  * tsvtable.c
  */
 
+#include <unistd.h>
 #include <stdio.h>
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
+#include <wchar.h>
 
 /* max line width */
 #define LINESIZE 65536
-
-/* max number of tab-separated fields */
-#define MAXTOKENS 256
 
 /* number of lines to allocate memory for at each step */
 #define TOKENLINES_INC 4096
 
 /* each line of data read */
-char* linebuf;
+char linebuf[LINESIZE];
 
 /* each array of tokens */
 char** tokens;
@@ -49,6 +48,10 @@ size_t addtokens(size_t, char**);
 void init();
 size_t getcolumnwidths(size_t, char***);
 void printcolumns(size_t, char***);
+size_t mbstrlen(const char* s);
+void mbprintleftpad(size_t, char*);
+
+size_t *alloced = 0;
 
 int
 main(int argc, char** argv) {
@@ -70,7 +73,6 @@ init() {
     tokenlines_numtokens = NULL;
     numlines = 0;
     tokenlines_bufsize = 0;
-    linebuf = NULL;
 }
 
 int
@@ -83,7 +85,7 @@ readfile(char* filename) {
     if (!readfp(fp, filename)) {
         return 0;
     }
-    if (!fclose(fp)) {
+    if (fp != stdin && fclose(fp) != 0) {
         fprintf(stderr, "tsvtable: cannot close %s: %s\n", filename, strerror(errno));
         return 0;
     }
@@ -97,18 +99,22 @@ readfp(FILE* fp, char* filename) {
         if (feof(fp)) {
             return 1;
         }
-        linebuf = (char*)malloc(sizeof(char *) * LINESIZE);
         if ((line = fgets(linebuf, LINESIZE, fp)) == NULL) {
             if (errno == 0) {
                 return 1;
             }
-            free(linebuf);
             fprintf(stderr, "tsvtable: fgets error from %s: %s (%d)\n", filename, strerror(errno), errno);
             return 0;
         }
-        if (addline(line) == 0) {
-            free(linebuf);
+        if (addline(line) != 0) {
+            if (isatty(fileno(stderr))) {
+                fprintf(stderr, "  %zu (%zu)\r", numlines, alloced);
+                fflush(stderr);
+            }
         }
+    }
+    if (isatty(fileno(stderr))) {
+        fprintf(stderr, "  %zu (%zu)\n", numlines, alloced);
     }
     return 1;
 }
@@ -137,15 +143,22 @@ addline(char* line) {
     if (*line == '\0') {
         return addtokens(0, NULL);
     }
-    tokens = (char**)malloc(sizeof(char *) * MAXTOKENS);
-    size_t numtokens;
-    for (j = 0, numtokens = 0, stringp = line; j < MAXTOKENS; j += 1) {
+    size_t numtokens = 1;
+    for (stringp = line; *stringp; stringp += 1) {
+        if (*stringp == '\t') {
+            numtokens += 1;
+        }
+    }
+    char* linecopy = strdup(line);
+    alloced += strlen(line) + 1;
+    tokens = (char**)malloc(sizeof(char *) * numtokens);
+    alloced += sizeof(char *) * numtokens;
+    for (j = 0, stringp = linecopy; j < numtokens; j += 1) {
         token = strsep(&stringp, "\t");
         if (token == NULL) {
             break;
         }
         tokens[j] = token;
-        numtokens += 1;
     }
     return addtokens(numtokens, tokens);
 }
@@ -157,10 +170,12 @@ addtokens(size_t numtokens, char** tokens) {
             tokenlines_bufsize += TOKENLINES_INC;
             tokenlines           = (char ***)malloc(sizeof(char **) * tokenlines_bufsize);
             tokenlines_numtokens = (size_t*)malloc(sizeof(size_t) * tokenlines_bufsize);
+            alloced += (sizeof(char **) + sizeof(size_t)) * tokenlines_bufsize;
         } else {
             tokenlines_bufsize += TOKENLINES_INC;
             tokenlines           = (char ***)realloc(tokenlines, sizeof(char **) * tokenlines_bufsize);
             tokenlines_numtokens = (size_t*)realloc(tokenlines_numtokens, sizeof(size_t) * tokenlines_bufsize);
+            alloced += (sizeof(char **) + sizeof(size_t)) * TOKENLINES_INC;
         }
     }
     if (numtokens == 0 || tokens == NULL) {
@@ -192,6 +207,7 @@ getcolumnwidths(size_t numlines, char*** tokenlines) {
 
     /* initialize columnwidth array */
     columnwidth = (size_t*)malloc(sizeof(size_t) * numcolumns);
+    alloced += sizeof(size_t) * numcolumns;
     for (j = 0; j < numcolumns; j += 1) {
         columnwidth[j] = 0;
     }
@@ -200,7 +216,7 @@ getcolumnwidths(size_t numlines, char*** tokenlines) {
     for (i = 0; i < numlines; i += 1) {
         numtokens = tokenlines_numtokens[i];
         for (j = 0; j < numtokens; j += 1) {
-            len = strlen(tokenlines[i][j]);
+            len = mbstrlen(tokenlines[i][j]);
             if (columnwidth[j] < len) {
                 columnwidth[j] = len;
             }
@@ -221,9 +237,9 @@ printcolumns(size_t numlines, char*** tokenlines) {
         for (j = 0; j < numcolumns; j += 1) {
             width = (int)columnwidth[j];
             if (j < numtokens) {
-                printf("%-*s", width, tokenlines[i][j]);
+                mbprintleftpad(width, tokenlines[i][j]);
             } else {
-                printf("%-*s", width, "");
+                mbprintleftpad(width, "");
             }
             if (j < (numcolumns - 1)) {
                 fputs(" | ", stdout);
@@ -232,4 +248,13 @@ printcolumns(size_t numlines, char*** tokenlines) {
             }
         }
     }
+}
+
+size_t mbstrlen(const char* s) {
+    return mbsrtowcs(NULL, &s, 0, NULL);
+}
+
+void mbprintleftpad(size_t len, char* s) {
+    fputs(s, stdout);
+    printf("%-*s", (int)(len - mbstrlen(s)), "");
 }
