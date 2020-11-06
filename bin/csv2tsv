@@ -2,17 +2,17 @@
 use warnings;
 use strict;
 
-use Text::CSV;
+use Text::CSV_XS;
 
-my $csv = Text::CSV->new({ binary => 1 });
-while (<>) {
-    s{\R\z}{};
-    $csv->parse($_);
-    print(join("\t", map { trim_normalize($_) } $csv->fields), "\n");
+my $csv = Text::CSV_XS->new({ binary => 1, auto_diag => 1 });
+while (my $row = $csv->getline(\*ARGV)) {
+    print(join("\t", map { trim_normalize($_) } @$row), "\n");
 }
 
 sub trim_normalize {
     my ($string) = @_;
-    $string =~ s{[\t\r\n]}{ }g;
+    $string =~ s{\A\s+}{}s;
+    $string =~ s{\s+\z}{}s;
+    $string =~ s{\s+}{ }gs;
     return $string;
 }
