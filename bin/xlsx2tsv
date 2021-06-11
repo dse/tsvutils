@@ -1,8 +1,38 @@
 #!/usr/bin/env perl
 use warnings;
 use strict;
+use utf8;
+
+#------------------------------------------------------------------------------
+# TODO: accept multiple filenames
+# TODO: stdin?
+
+#------------------------------------------------------------------------------
+use File::Basename qw(basename);
+our $PROGNAME = basename($0);
+
+#------------------------------------------------------------------------------
+use open IO => qw(:locale);
+use Encode::Locale;
+use Encode qw(decode);
+BEGIN {
+    @ARGV = map { decode('locale', $_, Encode::FB_CROAK) } @ARGV;
+}
+
+#------------------------------------------------------------------------------
+my $format;
+if ($PROGNAME eq 'xlsx2tsv') {
+    $format = 'tsv';
+} elsif ($PROGNAME eq 'xlsx2csv') {
+    $format = 'csv';
+} else {
+    die("cannot be invoked as $PROGNAME\n");
+}
+
+###############################################################################
 
 use Spreadsheet::ParseXLSX;
+use Text::CSV_XS;
 
 my $filename = shift(@ARGV);
 die("No filename specified.\n") unless defined $filename;
@@ -11,6 +41,13 @@ my $parser = Spreadsheet::ParseXLSX->new;
 my $workbook = $parser->parse($filename);
 
 die("No XLSX workbook found.\n") unless $workbook;
+
+my $csv;
+if ($format eq 'csv') {
+    $csv = Text::CSV_XS->new({
+        binary => 1, auto_diag => 1
+    });
+}
 
 for my $worksheet ( $workbook->worksheets() ) {
     my ( $row_min, $row_max ) = $worksheet->row_range();
@@ -22,6 +59,16 @@ for my $worksheet ( $workbook->worksheets() ) {
             push(@row, $cell ? $cell->value : undef);
             # TODO: option to print $cell->unformatted()
         }
-        print(join("\t", map { $_ // "" } @row), "\n");
+        if ($format eq 'tsv') {
+            foreach (@row) {
+                $_ //= '';
+            }
+            print(join("\t", @row), "\n");
+        } elsif ($format eq 'csv') {
+            foreach (@row) {
+                $_ //= '';
+            }
+            $csv->say(\@row);
+        }
     }
 }
