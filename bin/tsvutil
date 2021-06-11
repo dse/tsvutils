@@ -1,0 +1,280 @@
+#!/usr/bin/env perl
+use warnings;
+use strict;
+use utf8;
+
+#------------------------------------------------------------------------------
+use File::Basename qw(basename);
+our $PROGNAME = basename($0);
+
+#------------------------------------------------------------------------------
+use open IO => qw(:locale);
+use Encode::Locale;
+use Encode qw(decode);
+BEGIN {
+    @ARGV = map { decode('locale', $_, Encode::FB_CROAK) } @ARGV;
+}
+
+###############################################################################
+
+use Getopt::Long;
+Getopt::Long::Configure('bundling', 'gnu_compat', 'no_ignore_case');
+
+our @fieldList;
+our $inputFormat = 'csv';
+our $outputFormat = 'csv';
+our $usage = '';
+
+my @options = (
+    'o|output=s' => \$outputFormat,
+    'tsv'        => sub { $outputFormat = 'tsv'; },
+    'csv'        => sub { $outputFormat = 'csv'; },
+    'ssv'        => sub { $outputFormat = 'ssv'; },
+    'h|help'     => sub { print $usage; exit(0); },
+);
+
+$usage .= <<"EOF";
+usage:
+    $PROGNAME [<option> ...] [<file> ...]
+options:
+    -h, --help
+    -o, --output=tsv|csv|ssv    tab, comma, or space separated values
+        --tsv, --csv, --ssv
+EOF
+
+if ($PROGNAME eq 'csvcut' || $PROGNAME eq 'tsvcut') {
+    push(@options, (
+        'f|field|fields=s' => \@fieldList,
+    ));
+    $usage .= <<"EOF"
+    -f, --fields=<fieldspec>    e.g., 1-5,10,NAME
+EOF
+}
+
+Getopt::Long::GetOptions(@options) or die("Type '$PROGNAME --help' for help.\n");
+
+###############################################################################
+
+if ($PROGNAME =~ m{^csv}i) {
+    $inputFormat = 'csv';
+} elsif ($PROGNAME =~ m{^tsv}i) {
+    $inputFormat = 'tsv';
+}
+
+our $util = My::XSV::Util->new();
+$util->{inputFormat} = $inputFormat;
+$util->{outputFormat} = $outputFormat;
+
+if ($PROGNAME eq 'csvsample' || $PROGNAME eq 'tsvsample') {
+    $util->csvSample();
+} elsif ($PROGNAME eq 'csvcommon' || $PROGNAME eq 'tsvcommon') {
+    $util->csvCommon();
+} elsif ($PROGNAME eq 'csvfields' || $PROGNAME eq 'tsvfields') {
+    $util->csvFields();
+} elsif ($PROGNAME eq 'csvcut' || $PROGNAME eq 'tsvcut') {
+    $util->csvCut(@fieldList);
+} else {
+    die("cannot be invoked as $PROGNAME\n");
+}
+
+###############################################################################
+
+package My::XSV::Util {
+    use Text::CSV_XS;
+    sub new {
+        my ($class, %args) = @_;
+        my $self = bless({}, $class);
+        $self->{inputFormat} = 'csv';
+        $self->{outputFormat} = 'csv';
+        $self->{csv} = Text::CSV_XS->new({
+            binary => 1, auto_diag => 1
+        });
+        $self->{csvOut} = Text::CSV_XS->new({
+            binary => 1, auto_diag => 1
+        });
+        return $self;
+    }
+    sub csvFields {
+        my ($self) = @_;
+        $self->init();
+        for (my $i = 0; $i < scalar @{$self->{columnNameArray}}; $i += 1) {
+            printf("%-7d %s\n", $i + 1, $self->{columnNameArray}->[$i]);
+        }
+    }
+    sub csvSample {
+        my ($self) = @_;
+        $self->init();
+        $self->getSampleRows();
+        $self->showColumnSamples();
+    }
+    sub csvCommon {
+        my ($self) = @_;
+        $self->init();
+        my @counts;
+        while (my $row = $self->inputRow()) {
+            if ($. % 100 == 0) {
+                printf STDERR ("  %d\r", $.);
+            }
+            for (my $i = 0; $i < scalar @$row; $i += 1) {
+                $counts[$i]{$row->[$i]} += 1;
+            }
+        }
+        my @columnNames = @{$self->{columnNameArray}};
+        for (my $i = 0; $i < scalar(@columnNames); $i += 1) {
+            printf("%-7d %s\n", $i + 1, $columnNames[$i]);
+            my $counts = $counts[$i];
+            my @keys = keys %$counts;
+            my @counts = map { [ $_ => $counts->{$_} ] } @keys;
+            @counts = sort { $b->[1] <=> $a->[1] } @counts;
+            my $nvalues = scalar @keys;
+            if (scalar @counts > 10) {
+                splice(@counts, 10);
+            }
+            foreach my $count (@counts) {
+                printf("                %-7d %s\n", $count->[1], $count->[0]);
+            }
+            printf("                (%d unique values in this column)\n", $nvalues);
+        }
+    }
+    sub csvCut {
+        my ($self, @fieldListEntries) = @_;
+        $self->init();
+        my @fieldNumbers = $self->parseFieldList(@fieldListEntries);
+        @fieldNumbers = map { $_ - 1 } @fieldNumbers;
+        my $csv = $self->{csv};
+        my @header = map { $self->{columnNameArray}->[$_] } @fieldNumbers;
+        $self->outputRow(@header);
+        while (my $row = $self->inputRow()) {
+            my @result = map { $row->[$_] } @fieldNumbers;
+            $self->outputRow(@result);
+        }
+    }
+    sub parseFieldList {
+        my ($self, @fieldListEntries) = @_;
+        my @result;
+        my $RX_FIELD_NUMBER = qr{(?:[1-9][0-9]*)};
+        my $RX_FIELD_RANGE = qr{(?:${RX_FIELD_NUMBER}(?:-${RX_FIELD_NUMBER})?)};
+        foreach my $entry (@fieldListEntries) {
+            my @fieldRanges = split(/,/, $entry);
+            foreach my $range (@fieldRanges) {
+                if ($range =~ $RX_FIELD_RANGE) {
+                    my ($a, $b) = split(/-/, $range);
+                    if (defined $b) {
+                        if ($a > $b) {
+                            ($a, $b) = ($b, $a);
+                        }
+                        for (my $i = $a; $i <= $b; $i += 1) {
+                            push(@result, $i);
+                        }
+                    } else {
+                        push(@result, $a);
+                    }
+                } else {
+                    my $cn = $self->getColumnNumber($range);
+                    if (!defined $cn) {
+                        die("invalid column name: $range\n");
+                    }
+                    push(@result, $cn + 1);
+                }
+            }
+        }
+        return @result;
+    }
+    sub getSampleRows {
+        my ($self) = @_;
+        my $csv = $self->{csv};
+        my $fh = $self->{fh} //= \*ARGV;
+        $self->{sampleRowCount} //= 10;
+        $self->{sampleRows} = [];
+        for (my $i = 0; $i < $self->{sampleRowCount}; $i += 1) {
+            my $row = $self->inputRow();
+            last unless $row;
+            push(@{$self->{sampleRows}}, $row);
+        }
+    }
+    sub showColumnSamples {
+        my ($self) = @_;
+        for (my $i = 0; $i < scalar @{$self->{columnNameArray}}; $i += 1) {
+            printf("%-7d %s\n", $i + 1, $self->{columnNameArray}->[$i]);
+            foreach my $row (@{$self->{sampleRows}}) {
+                printf("                %s\n", $row->[$i]);
+            }
+        }
+    }
+    sub init {
+        my ($self) = @_;
+        $self->{csv} = Text::CSV_XS->new({
+            binary => 1,
+            auto_diag => 1
+        });
+        $self->{fh} //= \*ARGV;
+        $self->getHeaderRow();
+        $self->checkColumnNamesForDuplicates();
+    }
+    sub getHeaderRow {
+        my ($self) = @_;
+        my $row = $self->inputRow();
+        return unless $row;
+        $self->{columnNameArray} = $row;
+        my %columnNameHash;
+        my %columnNameHashCI;
+        for (my $i = 0; $i < scalar @$row; $i += 1) {
+            $columnNameHash{$row->[$i]} = $i;
+            $columnNameHashCI{lc $row->[$i]} = $i;
+        }
+        $self->{columnNameHash}   = \%columnNameHash;
+        $self->{columnNameHashCI} = \%columnNameHashCI;
+    }
+    sub putHeaderRow {
+        my ($self) = @_;
+        my $csvOut = $self->{csvOut};
+        $csvOut->say(\*STDOUT, $self->{columnNameArray});
+    }
+    sub getColumnNumber {
+        my ($self, $columnName) = @_;
+        return $self->{columnNameHash}->{$columnName} // $self->{columnNameHashCI}->{lc $columnName};
+    }
+    sub checkColumnNamesForDuplicates {
+        my ($self) = @_;
+        my %counts = $self->getCounts(@{$self->{columnNameArray}});
+        my @dupes = grep { $counts{$_} > 1 } sort keys %counts;
+        if (scalar @dupes) {
+            die("Duplicate columns found: @dupes\n");
+        }
+    }
+    sub getCounts {
+        my ($self, @data) = @_;
+        my %result;
+        foreach my $data (@data) {
+            $result{$data} += 1;
+        }
+        return %result if wantarray;
+        return \%result;
+    }
+
+    # return an arrayref, or falsy value if EOF
+    sub inputRow {
+        my ($self) = @_;
+        my $fh = $self->{fh};
+        if ($self->{inputFormat} eq 'tsv') {
+            my $line = <$fh>;
+            return unless defined $line;
+            $line =~ s{\R\z}{};
+            my @line = split("\t", $line);
+            return \@line;
+        } elsif ($self->{inputFormat} eq 'csv') {
+            my $row = $self->{csv}->getline($fh);
+            return $row;
+        }
+    }
+    sub outputRow {
+        my ($self, @row) = @_;
+        if ($self->{outputFormat} eq 'tsv') {
+            print(join("\t", @row), "\n");
+        } elsif ($self->{outputFormat} eq 'ssv') {
+            print(join(" ", grep { /\S/ } @row), "\n");
+        } elsif ($self->{outputFormat} eq 'csv') {
+            $self->{csvOut}->say(\*STDOUT, \@row);
+        }
+    }
+};
