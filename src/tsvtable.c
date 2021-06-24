@@ -2,6 +2,7 @@
  * tsvtable.c
  */
 
+#include "tsvtable.h"
 #include <unistd.h>
 #include <stdio.h>
 #include <errno.h>
@@ -9,11 +10,6 @@
 #include <stdlib.h>
 #include <wchar.h>
 #include <locale.h>
-
-#define LINESIZE 65536
-#define TOKENLINES_INC 4096
-#define LINESINC 4096
-#define MAXCOLUMNS 256
 
 char linebuf[LINESIZE];
 char **lines = NULL;
@@ -26,19 +22,6 @@ size_t alloced = 0;
 char tokenbuf[LINESIZE];
 char* tokens[MAXCOLUMNS];
 size_t numtokens;
-
-int main(int, char**);
-int readfile(char*);
-int readfp(FILE*, char*);
-int chomp(char*);
-size_t addline(char*);
-size_t mbstrlen(const char* s);
-void mbprintleftpad(size_t, char*);
-void computecolumnwidths();
-void printlines();
-void tokenize(char* s);
-
-#define printlocaleinfo(what) (printf("%s: %s\n", #what, setlocale(what, NULL)))
 
 int
 main(int argc, char** argv) {
