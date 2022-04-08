@@ -157,7 +157,7 @@ package My::XSV::Util {
         foreach my $entry (@fieldListEntries) {
             my @fieldRanges = split(/,/, $entry);
             foreach my $range (@fieldRanges) {
-                if ($range =~ $RX_FIELD_RANGE) {
+                if ($range =~ m{^$RX_FIELD_RANGE$}) {
                     my ($a, $b) = split(/-/, $range);
                     if (defined $b) {
                         if ($a > $b) {
