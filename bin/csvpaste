@@ -1,0 +1,72 @@
+#!/usr/bin/env perl
+use warnings;
+use strict;
+use open OUT => ':locale';
+
+use Text::CSV_XS;
+use Getopt::Long;
+
+my $stdinInUse = 0;
+my @fh;
+
+foreach my $arg (@ARGV) {
+    if ($arg eq '-' || $arg eq '/dev/stdin') {
+        if ($stdinInUse) {
+            die("csvpaste: cannot specify stdin more than once\n");
+        }
+        push(@fh, \*STDIN);
+        next;
+    }
+    my $fh;
+    if (!open($fh, '<', $arg)) {
+        die("csvpaste: $arg: $!\n");
+    }
+    push(@fh, $fh);
+}
+
+my @done = map { 0 } @fh;
+my @csv = map { Text::CSV_XS->new({ binary => 1, auto_diag => 1, keep_meta_info => 1 }) } @fh;
+my $out = Text::CSV_XS->new({ binary => 1, auto_diag => 1, keep_meta_info => 1 });
+
+my $rowCount = 0;
+while (grep { $_ == 0 } @done) {
+    $rowCount += 1;
+
+    my @data;
+
+    for (my $i = 0; $i <= $#fh; $i += 1) {
+        next if $done[$i];
+        my $fh = $fh[$i];
+        my $csv = $csv[$i];
+        my $row = $csv->getline($fh);
+        if (!$row) {
+            close($fh);
+            $fh[$i] = undef;
+            $done[$i] = 1;
+            $csv[$i] = undef;
+            next;
+        }
+        @$row = map { '' + $_ } @$row;
+        push(@data, @$row);
+
+        if ($rowCount == 1) {
+            warn("1\n");
+            my @types = map { undef } @data;
+            for (my $i = 0; $i <= $#data; $i += 1) {
+                my $data = $data[$i];
+                if ($data =~ m{^(?:zip|postal)}i) {
+                    $types[$i] = Text::CSV_XS::PV;
+                }
+            }
+            $csv->types(\@types);
+            my @t = $csv->types;
+            for (my $i = 0; $i <= $#data; $i += 1) {
+                printf STDERR ("%4d  %s  %s\n", $i, $data[$i], $t[$i]);
+            }
+        }
+    }
+
+    my $fh = select;
+    $out->print($fh, \@data);
+    print("\n");
+}
