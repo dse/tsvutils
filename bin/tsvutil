@@ -16,6 +16,7 @@ our @fieldList;
 our $inputFormat = 'csv';
 our $outputFormat = 'csv';
 our $usage = '';
+our $number = 0;
 
 my @options = (
     'o|output=s' => \$outputFormat,
@@ -34,12 +35,21 @@ options:
         --tsv, --csv, --ssv
 EOF
 
-if ($PROGNAME eq 'csvcut' || $PROGNAME eq 'tsvcut') {
+if ($PROGNAME eq 'csvcut' || $PROGNAME eq 'tsvcut' || $PROGNAME eq 'csvcount' || $PROGNAME eq 'tsvcount') {
     push(@options, (
         'f|field|fields=s' => \@fieldList,
     ));
     $usage .= <<"EOF"
     -f, --fields=<fieldspec>    e.g., 1-5,10,NAME
+EOF
+}
+
+if ($PROGNAME eq 'csvfields' || $PROGNAME eq 'tsvfields') {
+    push(@options, (
+        'n|number' => \$number,
+    ));
+    $usage .= <<"EOF"
+    -n, --number                print field numbers too
 EOF
 }
 
@@ -56,6 +66,7 @@ if ($PROGNAME =~ m{^csv}i) {
 our $util = My::XSV::Util->new();
 $util->{inputFormat} = $inputFormat;
 $util->{outputFormat} = $outputFormat;
+$util->{printFieldNumbers} = $number;
 
 if ($PROGNAME eq 'csvsample' || $PROGNAME eq 'tsvsample') {
     $util->csvSample();
@@ -69,6 +80,8 @@ if ($PROGNAME eq 'csvsample' || $PROGNAME eq 'tsvsample') {
     $util->csvCut(@fieldList);
 } elsif ($PROGNAME eq 'csvjson' || $PROGNAME eq 'tsvjson') {
     $util->csvJson();
+} elsif ($PROGNAME eq 'csvcount' || $PROGNAME eq 'tsvcount') {
+    $util->csvCount(@fieldList);
 } else {
     die("cannot be invoked as $PROGNAME\n");
 }
@@ -83,12 +96,8 @@ package My::XSV::Util {
         my $self = bless({}, $class);
         $self->{inputFormat} = 'csv';
         $self->{outputFormat} = 'csv';
-        $self->{csv} = Text::CSV_XS->new({
-            binary => 1, auto_diag => 1
-        });
-        $self->{csvOut} = Text::CSV_XS->new({
-            binary => 1, auto_diag => 1
-        });
+        $self->{csv} = Text::CSV_XS->new({ binary => 1, auto_diag => 1, keep_meta_info => 1 });
+        $self->{json} = JSON->new()->pretty(1)->ascii(1)->canonical(1);
         return $self;
     }
     sub csvAwk {
@@ -137,7 +146,8 @@ package My::XSV::Util {
         my ($self) = @_;
         $self->init();
         for (my $i = 0; $i < scalar @{$self->{columnNameArray}}; $i += 1) {
-            printf("%-3d %s\n", $i + 1, $self->{columnNameArray}->[$i]);
+            printf("%-3d ", $i + 1) if $self->{printFieldNumbers};
+            printf("%s\n", $self->{columnNameArray}->[$i]);
         }
     }
     sub csvSample {
@@ -180,7 +190,6 @@ package My::XSV::Util {
         $self->init();
         my @fieldNumbers = $self->parseFieldList(@fieldListEntries);
         @fieldNumbers = map { $_ - 1 } @fieldNumbers;
-        my $csv = $self->{csv};
         my @header = map { $self->{columnNameArray}->[$_] } @fieldNumbers;
         $self->outputRow(@header);
         while (my $row = $self->inputRow()) {
@@ -205,6 +214,48 @@ package My::XSV::Util {
         my $json = JSON->new()->ascii(1)->pretty(1)->canonical(1);
         print($json->encode($obj));
     }
+    sub csvCount {
+        my ($self, @fieldListEntries) = @_;
+        $self->init();
+        my @fieldNumbers = $self->parseFieldList(@fieldListEntries);
+        @fieldNumbers = map { $_ - 1 } @fieldNumbers;
+        my @columnNameArray = @{$self->{columnNameArray}};
+        if (!scalar @fieldNumbers) {
+            @fieldNumbers = (0 .. $#columnNameArray);
+        }
+
+        my @count;
+        while (my $row = $self->inputRow()) {
+            foreach my $i (@fieldNumbers) {
+                my $fieldName = $self->{columnNameArray}->[$i];
+                my $value = $row->[$i];
+                $count[$i]{$value // '(null)'} += 1;
+            }
+        }
+        foreach my $i (@fieldNumbers) {
+            my $fieldName = $self->{columnNameArray}->[$i];
+            print("$fieldName\n");
+            my $counts = $count[$i];
+            my @counts = map { [$_ => $counts->{$_}] } keys %$counts;
+            @counts = sort { $b->[1] <=> $a->[1] } @counts;
+            splice(@counts, 10);
+            foreach my $count (@counts) {
+                printf("    %6d  %s\n", $count->[1], $count->[0]);
+            }
+        }
+    }
+    # sub csvJson {
+    #     my ($self) = @_;
+    #     $self->init();
+    #     my @header = @{$self->{columnNameArray}};
+    #     while (my $row = $self->inputRow()) {
+    #         my $obj = {};
+    #         for (my $i = 0; $i <= $#$row && $i <= $#header; $i += 1) {
+    #             $obj->{$header[$i]} = $row->[$i];
+    #         }
+    #         print($self->{json}->encode($obj));
+    #     }
+    # }
     sub parseFieldList {
         my ($self, @fieldListEntries) = @_;
         my @result;
@@ -213,7 +264,7 @@ package My::XSV::Util {
         foreach my $entry (@fieldListEntries) {
             my @fieldRanges = split(/,/, $entry);
             foreach my $range (@fieldRanges) {
-                if ($range =~ $RX_FIELD_RANGE) {
+                if ($range =~ m{^$RX_FIELD_RANGE$}) {
                     my ($a, $b) = split(/-/, $range);
                     if (defined $b) {
                         if ($a > $b) {
@@ -238,7 +289,6 @@ package My::XSV::Util {
     }
     sub getSampleRows {
         my ($self) = @_;
-        my $csv = $self->{csv};
         my $fh = $self->{fh} //= \*ARGV;
         $self->{sampleRowCount} //= 10;
         $self->{sampleRows} = [];
@@ -259,10 +309,6 @@ package My::XSV::Util {
     }
     sub init {
         my ($self) = @_;
-        $self->{csv} = Text::CSV_XS->new({
-            binary => 1,
-            auto_diag => 1
-        });
         $self->{fh} //= \*ARGV;
         $self->getHeaderRow();
         $self->checkColumnNamesForDuplicates();
@@ -283,8 +329,7 @@ package My::XSV::Util {
     }
     sub putHeaderRow {
         my ($self) = @_;
-        my $csvOut = $self->{csvOut};
-        $csvOut->say(\*STDOUT, $self->{columnNameArray});
+        $self->{csv}->say(\*STDOUT, $self->{columnNameArray});
     }
     sub getColumnNumber {
         my ($self, $columnName) = @_;
@@ -330,7 +375,7 @@ package My::XSV::Util {
         } elsif ($self->{outputFormat} eq 'ssv') {
             print(join(" ", grep { /\S/ } @row), "\n");
         } elsif ($self->{outputFormat} eq 'csv') {
-            $self->{csvOut}->say(\*STDOUT, \@row);
+            $self->{csv}->say(\*STDOUT, \@row);
         }
     }
 };
