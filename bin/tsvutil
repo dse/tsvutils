@@ -306,6 +306,12 @@ package My::XSV::Util {
         my $fh = $self->{fh};
         if ($self->{inputFormat} eq 'tsv') {
             my $line = <$fh>;
+
+            if (!defined $self->{oldARGV} || $ARGV ne $self->{oldARGV}) {
+                print "==> $ARGV <==\n";
+                $self->{oldARGV} = $ARGV;
+            }
+
             return unless defined $line;
             $line =~ s{\R\z}{};
             my @line = split("\t", $line);
