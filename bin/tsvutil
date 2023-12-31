@@ -7,15 +7,7 @@ use utf8;
 use File::Basename qw(basename);
 our $PROGNAME = basename($0);
 
-#------------------------------------------------------------------------------
-use open IO => qw(:locale);
-use Encode::Locale;
-use Encode qw(decode);
-BEGIN {
-    @ARGV = map { decode('locale', $_, Encode::FB_CROAK) } @ARGV;
-}
-
-###############################################################################
+# use open IO => qw(:locale);
 
 use Getopt::Long;
 Getopt::Long::Configure('bundling', 'gnu_compat', 'no_ignore_case');
@@ -82,10 +74,12 @@ if ($PROGNAME eq 'csvsample' || $PROGNAME eq 'tsvsample') {
     $util->csvCommon();
 } elsif ($PROGNAME eq 'csvfields' || $PROGNAME eq 'tsvfields') {
     $util->csvFields();
-} elsif ($PROGNAME eq 'csvjson' || $PROGNAME eq 'tsvjson') {
-    $util->csvJson();
+} elsif ($PROGNAME eq 'csvawk' || $PROGNAME eq 'tsvawk') {
+    $util->csvAwk();
 } elsif ($PROGNAME eq 'csvcut' || $PROGNAME eq 'tsvcut') {
     $util->csvCut(@fieldList);
+} elsif ($PROGNAME eq 'csvjson' || $PROGNAME eq 'tsvjson') {
+    $util->csvJson();
 } elsif ($PROGNAME eq 'csvcount' || $PROGNAME eq 'tsvcount') {
     $util->csvCount(@fieldList);
 } else {
@@ -105,6 +99,48 @@ package My::XSV::Util {
         $self->{csv} = Text::CSV_XS->new({ binary => 1, auto_diag => 1, keep_meta_info => 1 });
         $self->{json} = JSON->new()->pretty(1)->ascii(1)->canonical(1);
         return $self;
+    }
+    sub csvAwk {
+        my ($self) = @_;
+        $self->init();
+        my $awk;
+        my @awkArgs = @ARGV;
+        @ARGV = ();
+        foreach (@awkArgs) {
+            s{\$([A-Za-z0-9_]+)}{
+                '$' . (defined $self->{columnNameHashCI}->{lc $1}
+                       ? $self->{columnNameHashCI}->{lc $1} : $1);
+            }ge;
+        }
+        print("gawk @awkArgs\n");
+
+        my $parentWrite;
+        my $parentRead;
+        my $childWrite;
+        my $childRead;
+        pipe($childRead, $parentWrite) or die("pipe: $!\n");
+        my $pid = fork();
+        if (!defined $pid) {
+            die("fork: $!\n");
+        }
+        if ($pid) {             # child
+            close($parentWrite);
+            open(STDIN, "<&", $childRead) or die("open: $!");
+            my $ph;
+            open($ph, '-|', 'gawk', "-F$;", @awkArgs) or die("open pipe: $!\n");
+            while (<$ph>) {
+                s{\R\z}{};
+                my @data = split($;, $_);
+                $self->{csvOut}->say(\*STDOUT, \@data);
+            }
+            close($ph);
+            exit(0);
+        }
+        while (my $row = $self->inputRow()) {
+            print $parentWrite join($;, @$row), "\n";
+        }
+        close $parentWrite;
+        waitpid($pid, 0);
     }
     sub csvFields {
         my ($self) = @_;
@@ -161,6 +197,23 @@ package My::XSV::Util {
             $self->outputRow(@result);
         }
     }
+    sub csvJson {
+        my ($self) = @_;
+        $self->init();
+        my $csv = $self->{csv};
+        my $obj = [];
+        while (my $row = $self->inputRow()) {
+            my $rec = {};
+            for (my $i = 0; $i < scalar @{$self->{columnNameArray}}; $i += 1) {
+                my $columnName = $self->{columnNameArray}->[$i];
+                my $value = $row->[$i];
+                $rec->{$columnName} = $value;
+            }
+            push(@$obj, $rec);
+        }
+        my $json = JSON->new()->ascii(1)->pretty(1)->canonical(1);
+        print($json->encode($obj));
+    }
     sub csvCount {
         my ($self, @fieldListEntries) = @_;
         $self->init();
@@ -191,18 +244,18 @@ package My::XSV::Util {
             }
         }
     }
-    sub csvJson {
-        my ($self) = @_;
-        $self->init();
-        my @header = @{$self->{columnNameArray}};
-        while (my $row = $self->inputRow()) {
-            my $obj = {};
-            for (my $i = 0; $i <= $#$row && $i <= $#header; $i += 1) {
-                $obj->{$header[$i]} = $row->[$i];
-            }
-            print($self->{json}->encode($obj));
-        }
-    }
+    # sub csvJson {
+    #     my ($self) = @_;
+    #     $self->init();
+    #     my @header = @{$self->{columnNameArray}};
+    #     while (my $row = $self->inputRow()) {
+    #         my $obj = {};
+    #         for (my $i = 0; $i <= $#$row && $i <= $#header; $i += 1) {
+    #             $obj->{$header[$i]} = $row->[$i];
+    #         }
+    #         print($self->{json}->encode($obj));
+    #     }
+    # }
     sub parseFieldList {
         my ($self, @fieldListEntries) = @_;
         my @result;
